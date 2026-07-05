@@ -87,6 +87,8 @@ export default function App() {
   const [openDetail, setOpenDetail] = useState(null);   // itemId
   const [moveOpen, setMoveOpen] = useState(null);       // itemId (移動先ポップ)
   const [dateOpen, setDateOpen] = useState(null);       // itemId (カレンダーポップ)
+  const [inboxLeftOpen, setInboxLeftOpen] = useState(()=>lsGet("sb.inboxLeftOpen", true)); // 左Inboxカラム開閉(永続)
+  useEffect(()=>{ lsSet("sb.inboxLeftOpen", inboxLeftOpen); },[inboxLeftOpen]);
   const [paletteFor, setPaletteFor] = useState(null);
   const [noteOpenFor, setNoteOpenFor] = useState(null);
   const [fontScale, setFontScale] = useState(()=>lsGet("sb.fontScale", 1));
@@ -322,6 +324,17 @@ export default function App() {
         <button style={S.btnGhost} onClick={()=>supabase.auth.signOut()}>ログアウト</button>
       </div>
       <div style={S.body}>
+        {inboxLeftOpen ? (
+          <aside style={S.leftCol}>
+            <div style={S.leftColHead}>
+              <span style={{...S.mirrorHead,color:"#8a4fb8",borderColor:"#8a4fb8",margin:0,border:"none",padding:0}}>📥 Inbox <span style={{opacity:.55}}>({inboxItems.length})</span></span>
+              <button style={S.iconBtn} title="閉じる" onClick={()=>setInboxLeftOpen(false)}>‹</button>
+            </div>
+            <ItemList items={inboxItems} h={H(null)} />
+          </aside>
+        ) : (
+          <button style={S.leftColTab} title="Inboxを開く" onClick={()=>setInboxLeftOpen(true)}>📥</button>
+        )}
         <div ref={canvasRef} style={S.canvas} onPointerDown={onCanvasDown} onWheel={onWheel}>
           <div style={{position:"absolute",transformOrigin:"0 0",transform:`translate(${view.x}px,${view.y}px) scale(${view.scale})`}}>
             {boxes.map(b=>(
@@ -348,7 +361,6 @@ export default function App() {
           <MirrorSection title="今週" refs={mirror.week} empty="なし" h={H(null)} accent="#c77d1a" />
           <MirrorSection title="今月" refs={mirror.month} empty="なし" h={H(null)} accent="#2c7a5b" />
           <MirrorSection title="それ以降" refs={mirror.later} empty="なし" h={H(null)} accent="#5566aa" />
-          <InboxPanel items={inboxItems} h={H(null)} />
         </aside>
       </div>
       {focusBox && (
@@ -732,6 +744,9 @@ const S = {
   fsReset:{border:"none",background:"transparent",fontSize:12,fontWeight:600,color:"#35608f",cursor:"pointer",padding:"0 2px"},
   // スマホ
   mBody:{flex:1,overflowY:"auto",padding:"12px 12px 60px",background:"#f7f7f4"},
+  leftCol:{width:300,flexShrink:0,borderRight:"1px solid #e3e3dd",background:"#fff",overflowY:"auto",padding:"14px 12px 40px"},
+  leftColHead:{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6,paddingBottom:8,borderBottom:"1px solid #ededE6"},
+  leftColTab:{flexShrink:0,width:38,border:"none",borderRight:"1px solid #e3e3dd",background:"#faf6fd",cursor:"pointer",fontSize:18,color:"#8a4fb8",writingMode:"vertical-rl"},
   mCard:{background:"#fff",border:"1px solid",borderRadius:10,marginBottom:12,boxShadow:"0 1px 3px rgba(0,0,0,.06)"},
   mCardHead:{display:"flex",alignItems:"center",gap:7,padding:"9px 9px",borderBottom:"1px solid #eeeee7",borderRadius:"10px 10px 0 0"},
   viewToggle:{display:"flex",border:"1px solid #cfcfc5",borderRadius:8,overflow:"hidden",width:"100%"},
