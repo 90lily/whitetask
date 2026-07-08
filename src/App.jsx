@@ -79,6 +79,7 @@ const boxToDb = (b) => ({ id:b.id, title:b.title, x:b.x, y:b.y, w:b.w, h:b.h??nu
 
 export default function App() {
   const [session, setSession] = useState(null);
+  const [pwRecovery, setPwRecovery] = useState(false); // リカバリーリンク経由=パスワード設定画面へ
   const [loading, setLoading] = useState(true);
   const [boxes, setBoxes] = useState([]);       // 箱メタ情報のみ (items を持たない)
   const [items, setItems] = useState([]);       // 全タスクのフラット配列
@@ -87,6 +88,7 @@ export default function App() {
   const [openDetail, setOpenDetail] = useState(null);   // itemId
   const [moveOpen, setMoveOpen] = useState(null);       // itemId (移動先ポップ)
   const [dateOpen, setDateOpen] = useState(null);       // itemId (カレンダーポップ)
+  const [panning, setPanning] = useState(false);        // パン中カーソル(grabbing)用
   const [inboxLeftOpen, setInboxLeftOpen] = useState(()=>lsGet("sb.inboxLeftOpen", true)); // 左Inboxカラム開閉(永続)
   useEffect(()=>{ lsSet("sb.inboxLeftOpen", inboxLeftOpen); },[inboxLeftOpen]);
   const [paletteFor, setPaletteFor] = useState(null);
@@ -114,7 +116,7 @@ export default function App() {
   // ---- 認証 ----
   useEffect(()=>{
     supabase.auth.getSession().then(({data})=>setSession(data.session));
-    const { data:sub } = supabase.auth.onAuthStateChange((_e,s)=>setSession(s));
+    const { data:sub } = supabase.auth.onAuthStateChange((_e,s)=>{ if(_e==="PASSWORD_RECOVERY") setPwRecovery(true); setSession(s); });
     return ()=>sub.subscription.unsubscribe();
   },[]);
 
@@ -212,7 +214,7 @@ export default function App() {
     const b=boxes.find(x=>x.id===boxId); const el=boxRefs.current[boxId];
     const oh = b.h!=null ? b.h : (el?el.offsetHeight:160);
     drag.current={type:"resize",boxId,sx:e.clientX,sy:e.clientY,ow:b.w||280,oh}; bindMove(); };
-  const onCanvasDown=()=>{ if(focusId)return; drag.current={type:"pan",sx:null,sy:null,ox:view.x,oy:view.y}; bindMove(); };
+  const onCanvasDown=()=>{ if(focusId)return; setPanning(true); drag.current={type:"pan",sx:null,sy:null,ox:view.x,oy:view.y}; bindMove(); };
   const bindMove=()=>{ window.addEventListener("pointermove",onMove); window.addEventListener("pointerup",onUp); };
   const onMove=useCallback((e)=>{
     const d=drag.current; if(!d) return; const s=viewRef.current.scale;
@@ -225,7 +227,7 @@ export default function App() {
     if(d && (d.type==="box"||d.type==="resize")){
       setBoxes(bs=>{ const b=bs.find(x=>x.id===d.boxId); if(b) persistBox(b); return bs; }); // 確定時のみDB書込
     }
-    drag.current=null; window.removeEventListener("pointermove",onMove); window.removeEventListener("pointerup",onUp);
+    drag.current=null; setPanning(false); window.removeEventListener("pointermove",onMove); window.removeEventListener("pointerup",onUp);
   },[onMove]);
   const onWheel=(e)=>{ if(focusId)return; const delta=-e.deltaY*0.0012;
     setView(v=>{ const ns=Math.min(2,Math.max(0.3,v.scale*(1+delta))); const rect=canvasRef.current.getBoundingClientRect();
@@ -246,6 +248,7 @@ export default function App() {
 
   if(loading) return <Centered>読み込み中…</Centered>;
   if(!session) return <Login />;
+  if(pwRecovery) return <SetPassword onDone={()=>setPwRecovery(false)} />;
 
   // ============ スマホレイアウト ============
   if(isMobile){
@@ -335,7 +338,7 @@ export default function App() {
         ) : (
           <button style={S.leftColTab} title="Inboxを開く" onClick={()=>setInboxLeftOpen(true)}>📥</button>
         )}
-        <div ref={canvasRef} style={S.canvas} onPointerDown={onCanvasDown} onWheel={onWheel}>
+        <div ref={canvasRef} style={{...S.canvas, cursor: panning?"grabbing":"grab"}} onPointerDown={onCanvasDown} onWheel={onWheel}>
           <div style={{position:"absolute",transformOrigin:"0 0",transform:`translate(${view.x}px,${view.y}px) scale(${view.scale})`}}>
             {boxes.map(b=>(
               <Box key={b.id} b={b} items={itemsOf(b.id)} refCb={(el)=>{boxRefs.current[b.id]=el;}}
@@ -623,35 +626,73 @@ function Centered({ children }){
   return <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"-apple-system,'Hiragino Kaku Gothic ProN','Yu Gothic',sans-serif",color:"#565049",fontSize:16,background:"#f7f7f4"}}>{children}</div>;
 }
 
-// マジックリンク認証
+// パスワード認証 (iOSホーム画面PWAはマジックリンクだとセッションが別空間に落ちるため、PWA内で完結するパスワード方式)
+const inputSt = {width:"100%",boxSizing:"border-box",border:"1px solid #dcdcd3",borderRadius:8,padding:"10px 12px",fontSize:15,marginBottom:12,outline:"none"};
+const primaryBtn = (on)=>({width:"100%",border:"none",background:on?"#35608f":"#b8b8ae",color:"#fff",borderRadius:8,padding:"11px",fontSize:15,fontWeight:700,cursor:on?"pointer":"default"});
 function Login(){
   const [email,setEmail]=useState("");
-  const [sent,setSent]=useState(false);
+  const [pw,setPw]=useState("");
   const [err,setErr]=useState("");
-  const send=async()=>{
+  const [resetSent,setResetSent]=useState(false);
+  const canGo = email && pw;
+  const login=async()=>{
     setErr("");
-    const { error } = await supabase.auth.signInWithOtp({ email, options:{ emailRedirectTo: window.location.origin } });
-    if(error) setErr(error.message); else setSent(true);
+    const { error } = await supabase.auth.signInWithPassword({ email, password: pw });
+    if(error) setErr("ログイン失敗: "+error.message);
+  };
+  const sendReset=async()=>{
+    if(!email){ setErr("先にメールアドレスを入力してください"); return; }
+    setErr("");
+    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
+    if(error) setErr(error.message); else setResetSent(true);
   };
   return (
     <Centered>
       <div style={{width:340,maxWidth:"90vw",background:"#fff",border:"1px solid #e3e3dd",borderRadius:12,padding:24,boxShadow:"0 6px 24px rgba(0,0,0,.06)"}}>
         <div style={{fontSize:19,fontWeight:800,marginBottom:6,color:"#1d1d1b"}}>空間ボード</div>
-        <div style={{fontSize:13.5,color:"#565049",marginBottom:16,lineHeight:1.5}}>登録済みのメールにログインリンクを送ります。</div>
-        {sent ? (
-          <div style={{fontSize:14,color:"#2c7a5b",fontWeight:600,lineHeight:1.6}}>メールを確認してください。<br/>リンクを開くとログインします。</div>
-        ) : (
-          <>
-            <input type="email" value={email} placeholder="you@example.com" onChange={e=>setEmail(e.target.value)}
-              onKeyDown={e=>e.key==="Enter"&&email&&send()}
-              style={{width:"100%",boxSizing:"border-box",border:"1px solid #dcdcd3",borderRadius:8,padding:"10px 12px",fontSize:15,marginBottom:12,outline:"none"}} />
-            <button onClick={send} disabled={!email}
-              style={{width:"100%",border:"none",background:email?"#35608f":"#b8b8ae",color:"#fff",borderRadius:8,padding:"11px",fontSize:15,fontWeight:700,cursor:email?"pointer":"default"}}>
-              ログインリンクを送信
+        <div style={{fontSize:13.5,color:"#565049",marginBottom:16,lineHeight:1.5}}>メールとパスワードでログインします。</div>
+        <input type="email" value={email} placeholder="you@example.com" onChange={e=>setEmail(e.target.value)} style={inputSt} autoComplete="username" />
+        <input type="password" value={pw} placeholder="パスワード" onChange={e=>setPw(e.target.value)}
+          onKeyDown={e=>e.key==="Enter"&&canGo&&login()} style={inputSt} autoComplete="current-password" />
+        <button onClick={login} disabled={!canGo} style={primaryBtn(canGo)}>ログイン</button>
+        <div style={{marginTop:14,paddingTop:12,borderTop:"1px solid #ededE6"}}>
+          {resetSent ? (
+            <div style={{fontSize:13,color:"#2c7a5b",fontWeight:600,lineHeight:1.6}}>設定用メールを送りました。届いたリンクを開くとパスワード設定画面になります(この操作はPCブラウザ推奨)。</div>
+          ) : (
+            <button onClick={sendReset} style={{border:"none",background:"transparent",color:"#35608f",fontSize:13,fontWeight:600,cursor:"pointer",padding:0}}>
+              初回設定 / パスワードを忘れた → 設定メールを送る
             </button>
-            {err && <div style={{fontSize:12.5,color:"#c0392b",marginTop:10,lineHeight:1.5}}>{err}</div>}
-          </>
-        )}
+          )}
+        </div>
+        {err && <div style={{fontSize:12.5,color:"#c0392b",marginTop:10,lineHeight:1.5}}>{err}</div>}
+      </div>
+    </Centered>
+  );
+}
+
+// リカバリーリンクで戻ってきた直後の新パスワード設定
+function SetPassword({ onDone }){
+  const [pw,setPw]=useState("");
+  const [pw2,setPw2]=useState("");
+  const [err,setErr]=useState("");
+  const canGo = pw.length>=8 && pw===pw2;
+  const save=async()=>{
+    setErr("");
+    const { error } = await supabase.auth.updateUser({ password: pw });
+    if(error) setErr(error.message); else onDone();
+  };
+  return (
+    <Centered>
+      <div style={{width:340,maxWidth:"90vw",background:"#fff",border:"1px solid #e3e3dd",borderRadius:12,padding:24,boxShadow:"0 6px 24px rgba(0,0,0,.06)"}}>
+        <div style={{fontSize:19,fontWeight:800,marginBottom:6,color:"#1d1d1b"}}>パスワード設定</div>
+        <div style={{fontSize:13.5,color:"#565049",marginBottom:16,lineHeight:1.5}}>8文字以上で設定してください。次回からメール+パスワードでログインできます。</div>
+        <input type="password" value={pw} placeholder="新しいパスワード(8文字以上)" onChange={e=>setPw(e.target.value)} style={inputSt} autoComplete="new-password" />
+        <input type="password" value={pw2} placeholder="確認のためもう一度" onChange={e=>setPw2(e.target.value)}
+          onKeyDown={e=>e.key==="Enter"&&canGo&&save()} style={inputSt} autoComplete="new-password" />
+        <button onClick={save} disabled={!canGo} style={primaryBtn(canGo)}>設定して開始</button>
+        {pw && pw.length<8 && <div style={{fontSize:12.5,color:"#c77d1a",marginTop:8}}>8文字以上にしてください</div>}
+        {pw2 && pw!==pw2 && <div style={{fontSize:12.5,color:"#c77d1a",marginTop:8}}>2つの入力が一致していません</div>}
+        {err && <div style={{fontSize:12.5,color:"#c0392b",marginTop:10,lineHeight:1.5}}>{err}</div>}
       </div>
     </Centered>
   );
@@ -671,7 +712,7 @@ const S = {
   canvas:{flex:1,position:"relative",overflow:"hidden",cursor:"grab",background:"radial-gradient(#e4e4dc 1px,transparent 1px)",backgroundSize:"22px 22px"},
   hint:{position:"absolute",left:12,bottom:10,fontSize:"calc(13px * var(--fs))",fontWeight:500,color:SUB,background:"rgba(255,255,255,.82)",padding:"5px 10px",borderRadius:6,pointerEvents:"none"},
   box:{position:"absolute",background:"#fff",borderRadius:10,border:"1px solid",boxShadow:"0 1px 3px rgba(0,0,0,.08),0 6px 16px rgba(0,0,0,.05)"},
-  boxHead:{display:"flex",alignItems:"center",gap:7,padding:"9px 9px",borderBottom:"1px solid",borderRadius:"10px 10px 0 0",cursor:"grab"},
+  boxHead:{display:"flex",alignItems:"center",gap:7,padding:"9px 9px",borderBottom:"1px solid",borderRadius:"10px 10px 0 0",cursor:"move"},
   dot:{width:13,height:13,borderRadius:"50%",flexShrink:0},
   titleInput:{flex:1,border:"none",background:"transparent",fontWeight:700,fontSize:"calc(16.5px * var(--fs))",color:INK,outline:"none",minWidth:0},
   iconBtn:{border:"none",background:"transparent",cursor:"pointer",color:"#6a6a62",fontSize:"calc(14px * var(--fs))",padding:"2px 5px",borderRadius:4,lineHeight:1},
