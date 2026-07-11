@@ -70,11 +70,11 @@ const shortUrl = (u) => { try{ const x=new URL(u); return x.hostname.replace(/^w
 const HUES = [210,145,28,340,265,48,190,0];
 const PALETTE = [210,145,28,340,265,48,190,0,90,300];
 const uid = () => crypto.randomUUID();
-const mkItem = (o={}) => ({ id:uid(), box_id:null, text:"", date:"", done:false, starred:false, memo:"", detail:"", repeat:emptyRepeat(), ...o });
+const mkItem = (o={}) => ({ id:uid(), box_id:null, parent_id:null, text:"", date:"", done:false, starred:false, memo:"", detail:"", repeat:emptyRepeat(), ...o });
 
 // ---- DB行 <-> ローカル形式 ----
-const dbToItem = (r) => ({ id:r.id, box_id:r.box_id||null, text:r.text||"", date:r.date||"", done:!!r.done, starred:!!r.starred, memo:r.memo||"", detail:r.detail||"", repeat:r.repeat||emptyRepeat() });
-const itemToDb = (it) => ({ id:it.id, box_id:it.box_id, text:it.text, date:it.date||null, done:it.done, starred:it.starred, memo:it.memo, detail:it.detail, repeat:it.repeat });
+const dbToItem = (r) => ({ id:r.id, box_id:r.box_id||null, parent_id:r.parent_id||null, text:r.text||"", date:r.date||"", done:!!r.done, starred:!!r.starred, memo:r.memo||"", detail:r.detail||"", repeat:r.repeat||emptyRepeat() });
+const itemToDb = (it) => ({ id:it.id, box_id:it.box_id, parent_id:it.parent_id||null, text:it.text, date:it.date||null, done:it.done, starred:it.starred, memo:it.memo, detail:it.detail, repeat:it.repeat });
 const boxToDb = (b) => ({ id:b.id, title:b.title, x:b.x, y:b.y, w:b.w, h:b.h??null, collapsed:b.collapsed, hue:b.hue, type:b.type||"project", body:b.body||"" });
 
 export default function App() {
@@ -159,8 +159,14 @@ export default function App() {
     }));
   },[]);
   const addItem = (boxId)=>{ const nit=mkItem({box_id:boxId}); persistItem(nit); setItems(is=>[...is,nit]); };
-  const delItem = (itemId)=>{ removeItemDb(itemId); setItems(is=>is.filter(it=>it.id!==itemId)); };
-  const moveItem = (itemId, targetBoxId)=>{ patchItem(itemId,{box_id:targetBoxId}); setMoveOpen(null); };
+  const delItem = (itemId)=>{ removeItemDb(itemId); setItems(is=>is.filter(it=>it.id!==itemId && it.parent_id!==itemId)); }; // サブはDB側cascadeと一致
+  const moveItem = (itemId, targetBoxId)=>{
+    patchItem(itemId,{box_id:targetBoxId});
+    setItems(is=>is.map(it=>{ if(it.parent_id!==itemId) return it; const nit={...it,box_id:targetBoxId}; persistItem(nit); return nit; })); // サブも追従
+    setMoveOpen(null);
+  };
+  const addSub = (parentId, boxId)=>{ const nit=mkItem({box_id:boxId, parent_id:parentId}); persistItem(nit); setItems(is=>[...is,nit]); };
+  const subsOf = (pid)=>items.filter(it=>it.parent_id===pid);
 
   // ---- 箱操作 ----
   const patchBox=(boxId,patch)=>setBoxes(bs=>bs.map(b=>b.id!==boxId?b:{...b,...patch}));         // ローカルのみ(ドラッグ中)
@@ -177,12 +183,12 @@ export default function App() {
   };
 
   // ---- 抽出ビュー: Inbox(未分類) と 鏡(重要/今日/今週/今月/それ以降) ----
-  const inboxItems = useMemo(()=>items.filter(it=>it.box_id===null && !it.done),[items]);
+  const inboxItems = useMemo(()=>items.filter(it=>it.box_id===null && !it.parent_id && !it.done),[items]);
   const boxTitle = useMemo(()=>{ const m={}; boxes.forEach(b=>{m[b.id]={title:b.title,hue:b.hue};}); return m; },[boxes]);
   const mirror = useMemo(() => {
     const buckets = { star:[], overdue:[], today:[], week:[], month:[], later:[] };
     for(const it of items){
-      if(it.done) continue;
+      if(it.done || it.parent_id) continue; // サブタスクは鏡に出さない
       const meta = it.box_id ? boxTitle[it.box_id] : null;
       const ref = { item:it, boxTitle: meta?meta.title:"Inbox", hue: meta?meta.hue:265 };
       if(it.starred){ buckets.star.push(ref); continue; }  // ★は排他で最優先
@@ -235,7 +241,7 @@ export default function App() {
 
   const focusBox = focusId ? boxes.find(b=>b.id===focusId) : null;
   const projects = boxes.filter(b=>b.type==="project");
-  const itemsOf = (boxId)=>items.filter(it=>it.box_id===boxId);
+  const itemsOf = (boxId)=>items.filter(it=>it.box_id===boxId && !it.parent_id && !it.done); // 完了親は非表示・サブは別描画
   // タスク行に渡す共通ハンドラ束
   const H = (boxId)=>({
     onToggle:(iid)=>toggleDone(iid),
@@ -243,6 +249,7 @@ export default function App() {
     onAddItem:()=>addItem(boxId),
     onDelItem:(iid)=>delItem(iid),
     onMove:(iid,target)=>moveItem(iid,target),
+    onAddSub:(pid)=>addSub(pid,boxId), subsOf,
     moveOpen, setMoveOpen, dateOpen, setDateOpen, openDetail, setOpenDetail, projects,
   });
 
@@ -255,7 +262,7 @@ export default function App() {
     return (
       <div style={{...S.root, "--fs": fontScale}}>
         <div style={{...S.toolbar, flexWrap:"wrap", gap:6}}>
-          <span style={{...S.brand, fontSize:"calc(16px * var(--fs))"}}>空間ボード</span>
+          <span style={{...S.brand, fontSize:"calc(16px * var(--fs))"}}>WhiteTask</span>
           <div style={{flex:1}} />
           <div style={S.fsCtrl}>
             <button style={S.fsBtn} onClick={()=>bumpFont(-0.1)}>A−</button>
@@ -313,7 +320,7 @@ export default function App() {
   return (
     <div style={{...S.root, "--fs": fontScale}}>
       <div style={S.toolbar}>
-        <span style={S.brand}>空間ボード</span>
+        <span style={S.brand}>WhiteTask</span>
         <div style={{flex:1}} />
         <div style={S.fsCtrl} title="文字サイズ">
           <button style={S.fsBtn} onClick={()=>bumpFont(-0.1)}>A−</button>
@@ -516,11 +523,25 @@ function ItemList({ items, big, h }) {
                 onPointerDown={(e)=>e.stopPropagation()} onClick={(e)=>{const r=e.currentTarget.getBoundingClientRect();h.setMoveOpen(mOpen?null:{id:it.id,x:r.left,y:r.bottom+4});}}>⇄</button>
               <button style={{...S.iconBtn,color:it.detail?"#5a8dd6":"#c8c8be"}} title="メモを開く"
                 onPointerDown={(e)=>e.stopPropagation()} onClick={()=>h.setOpenDetail(open?null:it.id)}>▤</button>
+              <button style={S.iconBtn} title="サブタスク追加"
+                onPointerDown={(e)=>e.stopPropagation()} onClick={()=>h.onAddSub(it.id)}>＋</button>
             </div>
             {dOpen && <PopOverlay pos={h.dateOpen} width={256} onClose={()=>h.setDateOpen(null)}><CalPop value={it.date} onPick={(s)=>{h.onItem(it.id,{date:s});h.setDateOpen(null);}} onClear={()=>{h.onItem(it.id,{date:""});h.setDateOpen(null);}} /></PopOverlay>}
             {mOpen && <PopOverlay pos={h.moveOpen} width={240} onClose={()=>h.setMoveOpen(null)}><MovePop item={it} h={h} /></PopOverlay>}
             <LinkPreview text={it.memo} />
             {rsum && <span style={S.repeatTag}>{rsum}</span>}
+            {h.subsOf(it.id).length>0 && (
+              <div style={S.subWrap}>
+                {h.subsOf(it.id).map(s=>(
+                  <div key={s.id} style={S.subRow}>
+                    <input type="checkbox" checked={s.done} onChange={()=>h.onToggle(s.id)} style={S.subCheck} />
+                    <input style={{...S.subText,...(s.done?S.done:{})}} value={s.text} placeholder="サブタスク"
+                      onPointerDown={(e)=>e.stopPropagation()} onChange={(e)=>h.onItem(s.id,{text:e.target.value})} />
+                    <button style={S.iconBtn} onPointerDown={(e)=>e.stopPropagation()} onClick={()=>h.onDelItem(s.id)}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
             {open && (
               <div style={S.detailWrap} onPointerDown={(e)=>e.stopPropagation()}>
                 <textarea style={S.detailArea} value={it.detail} placeholder="詳細メモ(複数行) / URLを貼るとリンクになる" rows={4} onChange={(e)=>h.onItem(it.id,{detail:e.target.value})} />
@@ -649,7 +670,7 @@ function Login(){
   return (
     <Centered>
       <div style={{width:340,maxWidth:"90vw",background:"#fff",border:"1px solid #e3e3dd",borderRadius:12,padding:24,boxShadow:"0 6px 24px rgba(0,0,0,.06)"}}>
-        <div style={{fontSize:19,fontWeight:800,marginBottom:6,color:"#1d1d1b"}}>空間ボード</div>
+        <div style={{fontSize:19,fontWeight:800,marginBottom:6,color:"#1d1d1b"}}>WhiteTask</div>
         <div style={{fontSize:13.5,color:"#565049",marginBottom:16,lineHeight:1.5}}>メールとパスワードでログインします。</div>
         <input type="email" value={email} placeholder="you@example.com" onChange={e=>setEmail(e.target.value)} style={inputSt} autoComplete="username" />
         <input type="password" value={pw} placeholder="パスワード" onChange={e=>setPw(e.target.value)}
@@ -760,6 +781,10 @@ const S = {
   moveBtn:{border:"1px solid #e0e0d8",background:"#fafaf7",borderRadius:6,padding:"7px 10px",fontSize:"calc(14px * var(--fs))",fontWeight:600,color:"#2a2a26",cursor:"pointer",textAlign:"left"},
   moveCur:{opacity:.45,cursor:"default"},
   popBack:{position:"fixed",inset:0,zIndex:50,background:"transparent"},
+  subWrap:{margin:"2px 0 4px 25px",paddingLeft:9,borderLeft:"2px solid #e6e6de"},
+  subRow:{display:"flex",alignItems:"center",gap:6,padding:"2px 0"},
+  subCheck:{width:15,height:15,cursor:"pointer",flexShrink:0},
+  subText:{flex:1,minWidth:0,border:"none",background:"transparent",fontSize:"calc(14.5px * var(--fs))",fontWeight:500,outline:"none",padding:"2px",color:INK},
   noteBody:{width:"100%",boxSizing:"border-box",border:"none",fontSize:"calc(15px * var(--fs))",padding:"2px",resize:"none",fontFamily:"inherit",color:INK,outline:"none",lineHeight:1.6,background:"transparent"},
   projNote:{padding:"8px 8px 5px",borderBottom:"1px solid #eeeee7",background:"#fbfbf8"},
   item2:{display:"flex",alignItems:"center",gap:6,paddingLeft:25,marginTop:1},
